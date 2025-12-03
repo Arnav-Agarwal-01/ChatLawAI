@@ -307,7 +307,102 @@ Mistral outputs:
 
 ---
 
-# 🛠️ How to Run
+# 🛠️ How to Run (Local Dev)
+
+This repo has a React/Vite frontend (`src/`) and a Python backend (`backend/`). Run them in two terminals for local development.
+
+## Prerequisites
+- Node.js 18+ and a package manager (`npm`, `pnpm`, or `yarn`)
+- Python 3.10+
+
+## Backend (Python)
+
+1. Create a virtual environment and install deps:
+
+```zsh
+cd backend
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+2. Set environment variables (copy the example and fill values):
+
+```zsh
+cp .env.example .env
+# edit .env to set keys and config
+```
+
+3. Run the backend API:
+
+```zsh
+# Option A: start script
+./start.sh
+
+# Option B: run app directly
+python app.py
+```
+
+By default it usually serves on `http://127.0.0.1:8000` or `http://127.0.0.1:5000` depending on the app. Check `backend/app.py` or `start.sh` for the exact port.
+
+## Frontend (React + Vite)
+
+1. Install dependencies:
+
+```zsh
+cd ..
+npm install
+```
+
+2. Configure API base URL for local dev (if required):
+
+Edit `src/services/api.js` or `.env` variables used by the frontend to point to the backend (e.g., `http://127.0.0.1:8000`). If using Vite envs, create `.env.local` with:
+
+```zsh
+echo 'VITE_API_BASE_URL=http://127.0.0.1:8000' >> .env.local
+```
+
+3. Start the dev server:
+
+```zsh
+npm run dev
+```
+
+Vite will print a local URL like `http://localhost:5173`.
+
+## Run Both Together
+
+Open two terminals:
+
+- Terminal A (backend): `cd backend && source .venv/bin/activate && ./start.sh`
+- Terminal B (frontend): `npm run dev`
+
+Ensure the frontend `API_BASE_URL` points to the backend port.
+
+## Production Builds
+
+Frontend build:
+
+```zsh
+npm run build
+```
+
+The static assets will be in `dist/`.
+
+Backend can be run with any WSGI/ASGI server depending on the framework (e.g., `uvicorn`, `gunicorn`). Check `backend/README.md` for details if present.
+
+## Common Issues
+- Backend not reachable: verify port and CORS settings in `backend/app.py`.
+- 404 from frontend API calls: confirm `VITE_API_BASE_URL` and routes in `src/services/api.js`.
+- Python package errors: re-activate venv and re-run `pip install -r requirements.txt`.
+- Node version mismatch: use Node 18+ (`node -v`).
+
+---
+
+# 🛠️ How to Run (Colab Notebook)
+
+If you prefer the original notebook workflow:
 
 1. Open the notebook in Google Colab
 2. Run **Cell 1 → 14** sequentially

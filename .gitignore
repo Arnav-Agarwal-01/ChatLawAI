@@ -1,0 +1,67 @@
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/
+
+# Environment files (keep example tracked)
+.env
+.env.*
+!.env.example
+backend/.env
+backend/.env.*
+!backend/.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Node / Frontend
+node_modules/
+dist/
+.vite/
+.vercel/
+.netlify/
+coverage/
+
+# Vite cache
+**/.cache/
+
+# Python / Backend
+backend/__pycache__/
+**/*.pyc
+**/*.pyo
+backend/.pytest_cache/
+backend/.tox/
+backend/.mypy_cache/
+backend/.ruff_cache/
+backend/.ipynb_checkpoints/
+backend/.coverage
+backend/htmlcov/
+backend/.eggs/
+backend/*.egg-info/
+backend/build/
+backend/dist/
+
+# Virtual environments
+.venv/
+venv/
+backend/.venv/
+backend/venv/
+
+# Runtime / temp
+tmp/
+uploads/
+backend/tmp/
+backend/uploads/
+
+# Databases (local dev)
+*.sqlite3
+*.db
+
+# Docker (optional local overrides)
+docker-compose.override.yml
+node_modules/

@@ -21,63 +21,44 @@ logging.basicConfig(level=logging.INFO)
 # Safe Model Loading
 # -------------------------
 embedder = None
-llm_model = None
-llm_tokenizer = None
-llm_name = None
+OLLAMA_URL = "http://localhost:11434"
+OLLAMA_MODEL = "llama3.2"
+ollama_available = False
 
-def safe_import():
-    """Import ML libraries safely"""
-    global embedder, llm_model, llm_tokenizer, llm_name
-    
+def check_ollama():
+    """Ping Ollama and confirm the model is available."""
+    global ollama_available
+    try:
+        import httpx
+        r = httpx.get(f"{OLLAMA_URL}/api/tags", timeout=5)
+        if r.status_code == 200:
+            models = [m["name"] for m in r.json().get("models", [])]
+            if any(OLLAMA_MODEL in m for m in models):
+                ollama_available = True
+                logger.info(f"✓ Ollama ready — model: {OLLAMA_MODEL}")
+            else:
+                logger.warning(f"Ollama running but '{OLLAMA_MODEL}' not found. Pull it with: ollama pull {OLLAMA_MODEL}")
+        else:
+            logger.warning("Ollama responded with unexpected status")
+    except Exception as e:
+        logger.warning(f"Ollama not reachable: {e}. Falling back to templates.")
+
+def load_embedder():
+    """Load sentence-transformers embedder."""
+    global embedder
     try:
         import torch
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
-        logger.info(f"Using device: {device}")
-        
-        # Load embeddings model
-        try:
-            from sentence_transformers import SentenceTransformer
-            logger.info("Loading embedding model...")
-            embedder = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', device=device)
-            logger.info("✓ Embedding model loaded")
-        except Exception as e:
-            logger.warning(f"Embedding model failed: {e}")
-            embedder = None
-        
-        # Load LLM (small, stable model)
-        try:
-            from transformers import AutoTokenizer, AutoModelForCausalLM
-            
-            # Try small, stable models that work well on CPU
-            models_to_try = [
-                "distilgpt2",  # Very small, stable
-                "gpt2",        # Slightly larger backup
-            ]
-            
-            for model_name in models_to_try:
-                try:
-                    logger.info(f"Attempting to load LLM: {model_name}")
-                    llm_tokenizer = AutoTokenizer.from_pretrained(model_name)
-                    llm_model = AutoModelForCausalLM.from_pretrained(
-                        model_name,
-                        torch_dtype=torch.float32
-                    ).to(device)
-                    llm_name = model_name
-                    logger.info(f"✓ LLM loaded: {model_name}")
-                    break
-                except Exception as e:
-                    logger.warning(f"Failed to load {model_name}: {e}")
-                    continue
-                    
-        except Exception as e:
-            logger.warning(f"LLM loading failed: {e}")
-            llm_model = None
-            
+        from sentence_transformers import SentenceTransformer
+        logger.info("Loading embedding model...")
+        embedder = SentenceTransformer('sentence-transformers/all-MiniLM-L6-v2', device=device)
+        logger.info("✓ Embedding model loaded")
     except Exception as e:
-        logger.error(f"Failed to import ML libraries: {e}")
+        logger.warning(f"Embedding model failed: {e}")
+        embedder = None
 
-# Try to load models
-safe_import()
+check_ollama()
+load_embedder()
 
 # Import other dependencies
 try:
@@ -285,11 +266,33 @@ class AdaptiveQuestionGenerator:
                 best_score = score
         return best
 
-    def generate_next(self, case_type: str, kg: KnowledgeGraph, asked: List[str]) -> Optional[str]:
-        """Generate next question based on case type, ensuring no repeats"""
+    def generate_next(self, case_type: str, kg: KnowledgeGraph, asked: List[str], history: List[str] = None) -> Optional[str]:
+        """Generate next question based on case type and history, ensuring no repeats"""
         situation = kg.context.get('situation', '')
-        
-        # Determine which template to use
+        history = history or []
+
+        if ollama_available:
+            try:
+                import httpx
+                facts = "\n".join([f"{k}: {', '.join(v)}" for k, v in kg.entities.items() if v])
+                prompt = (
+                    f"You are a smart legal assistant gathering facts. Analyze the scenario and ask ONE short, relevant follow-up question to get more details.\n\n"
+                    f"Case: {case_type}\n"
+                    f"Situation: {situation}\n"
+                    f"Facts collected: {facts}\n"
+                    f"Conversation history: {history}\n\n"
+                    f"Output ONLY the exact question text. Keep it under 15 words. DO NOT ask anything already answered in the history."
+                )
+                resp = httpx.post(f"{OLLAMA_URL}/api/generate", json={"model": OLLAMA_MODEL, "prompt": prompt, "stream": False, "options": {"temperature": 0.3, "num_predict": 40}}, timeout=10)
+                if resp.status_code == 200:
+                    q = resp.json().get("response", "").strip().strip('"').strip("'")
+                    if q and not q.startswith("Here is") and not q.startswith("Question"):
+                        logger.info(f"Ollama contextual question: {q}")
+                        return q
+            except Exception as e:
+                logger.warning(f"Ollama question generation failed: {e}")
+
+        # Determine which template to use as fallback
         if case_type == 'criminal':
             subtype = kg.context.get('criminal_subtype') or self.detect_crime_subtype(situation)
             templates = self.QUESTION_TEMPLATES.get(subtype, self.QUESTION_TEMPLATES['theft'])
@@ -309,31 +312,123 @@ class AdaptiveQuestionGenerator:
         return None
 
 # -------------------------
-# AI-Powered Analyzer with LLM
+# AI-Powered Analyzer — Ollama / llama3.2
 # -------------------------
 class AIAnalyzer:
     def __init__(self):
-        self.has_llm = llm_model is not None
-        
+        self.has_llm = ollama_available
+
+    # ------------------------------------------------------------------
+    # Prompt builder
+    # ------------------------------------------------------------------
+    def _build_prompt(self, case_type: str, kg: KnowledgeGraph) -> str:
+        situation = kg.context.get('situation', '')
+        subtype = kg.context.get('criminal_subtype', '') if case_type == 'criminal' else case_type
+
+        facts_parts = []
+        for k, v in kg.entities.items():
+            if v:
+                facts_parts.append(f"{k}: {', '.join(v)}")
+        facts_str = '\n'.join(facts_parts) if facts_parts else 'None collected yet'
+
+        return f"""This is a law school exam question about Indian criminal and civil law. Answer comprehensively as a law professor would.
+
+SCENARIO ({case_type.upper()} - {subtype}):
+{situation}
+
+ADDITIONAL FACTS:
+{facts_str}
+
+For this scenario, explain in detail:
+1. Which sections of the Indian Penal Code (IPC) or Civil Procedure Code (CPC) apply and why
+2. The standard procedure a complainant should follow step-by-step
+3. Types of evidence that would strengthen the case
+4. The legal rights available to the person in this scenario under Indian law
+5. The typical legal timeline and what happens at each stage
+
+Be specific with IPC section numbers. Write as a detailed academic answer."""
+
+    # ------------------------------------------------------------------
+    # Call Ollama REST API (non-streaming)
+    # ------------------------------------------------------------------
+    def _call_ollama(self, prompt: str) -> Optional[str]:
+        if not ollama_available:
+            return None
+        try:
+            import httpx
+            logger.info(f"🦙 Calling Ollama ({OLLAMA_MODEL})...")
+            resp = httpx.post(
+                f"{OLLAMA_URL}/api/generate",
+                json={
+                    "model": OLLAMA_MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": 0.3,
+                        "num_predict": 600,
+                    }
+                },
+                timeout=120
+            )
+            resp.raise_for_status()
+            return resp.json().get("response", "").strip()
+        except Exception as e:
+            logger.warning(f"Ollama call failed: {e}")
+            return None
+
+    # ------------------------------------------------------------------
+    # Main entry point
+    # ------------------------------------------------------------------
     def analyze(self, case_type: str, kg: KnowledgeGraph) -> str:
         situation = kg.context.get('situation', '')
-        
-        # Get appropriate subtype based on case_type
-        if case_type == 'criminal':
-            subtype = kg.context.get('criminal_subtype', 'Unknown')
-        else:
-            subtype = case_type  # For non-criminal, use the case_type itself
-        
-        # Build fact summary
+        subtype = kg.context.get('criminal_subtype', 'Unknown') if case_type == 'criminal' else case_type
+
         fact_text = "\n".join([
-            f"{k.upper()}: {', '.join(v)}" 
+            f"{k.upper()}: {', '.join(v)}"
             for k, v in kg.entities.items() if v
         ])
-        
-        # For now, use enhanced template-based analysis
-        # (distilgpt2 is too small for quality legal analysis)
-        logger.info(f"🤖 Generating enhanced legal analysis for {case_type}/{subtype}...")
+
+        # --- Try Ollama / llama3.2 first ---
+        if ollama_available:
+            prompt = self._build_prompt(case_type, kg)
+            llm_response = self._call_ollama(prompt)
+            if llm_response:
+                return self._format_llm_report(case_type, subtype, situation, fact_text, llm_response)
+
+        # --- Fallback: template-based analysis ---
+        logger.info("Ollama unavailable — using template analysis")
         return self._generate_enhanced_report(case_type, subtype, situation, fact_text, kg)
+
+    # ------------------------------------------------------------------
+    # Format LLM output as a structured report
+    # ------------------------------------------------------------------
+    def _format_llm_report(self, case_type, subtype, situation, facts, llm_response):
+        return f"""═══════════════════════════════════════════════════
+LEGAL CONSULTATION REPORT  [AI Generated — llama3.2]
+═══════════════════════════════════════════════════
+
+Case Type: {case_type.upper()} — {subtype}
+Model: llama3.2 via Ollama (local)
+Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+
+─────────────────────────────────────────────────
+CLIENT STATEMENT:
+{situation}
+
+─────────────────────────────────────────────────
+FACTS EXTRACTED:
+{facts if facts else 'Limited information — answer all questions for a more detailed analysis'}
+
+─────────────────────────────────────────────────
+AI LEGAL ANALYSIS (llama3.2):
+
+{llm_response}
+
+─────────────────────────────────────────────────
+DISCLAIMER:
+This is an AI-generated preliminary analysis. Please consult a
+qualified legal professional for authoritative case-specific advice.
+═══════════════════════════════════════════════════"""
     
     def _format_report(self, case_type, subtype, situation, facts, analysis):
         return f"""═══════════════════════════════════════════════════
@@ -685,7 +780,7 @@ class AgenticLegalSystem:
             }
 
         # Generate first question
-        q = self.qgen.generate_next(case_type, kg, [])
+        q = self.qgen.generate_next(case_type, kg, [], [query])
         if q and max_turns > 0:
             with self.lock:
                 self.sessions[session_id]['asked_questions'].append(q)  # ✅ MARK AS ASKED
@@ -742,7 +837,7 @@ class AgenticLegalSystem:
         if state['turns_done'] < state['max_turns']:
             # ✅ PASS THE LIST OF ASKED QUESTIONS
             logger.info(f"Asked questions so far: {state['asked_questions']}")
-            q = self.qgen.generate_next(state['case_type'], state['kg'], state['asked_questions'])
+            q = self.qgen.generate_next(state['case_type'], state['kg'], state['asked_questions'], state['query_history'])
             if q:
                 with self.lock:
                     state['asked_questions'].append(q)  # ✅ MARK AS ASKED
@@ -768,7 +863,7 @@ class AgenticLegalSystem:
 
 # Create system instance
 system = AgenticLegalSystem()
-logger.info(f"Agentic Legal System ready | LLM: {llm_name or 'Not loaded'} | Embeddings: {'Loaded' if embedder else 'Not loaded'}")
+logger.info(f"Agentic Legal System ready | LLM: {'Ollama/' + OLLAMA_MODEL if ollama_available else 'Not loaded'} | Embeddings: {'Loaded' if embedder else 'Not loaded'}")
 
 # -------------------------
 # FastAPI App
